@@ -1,0 +1,36 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Ruff
+.ruff_cache/
+
+# macOS
+.DS_Store
+
+# Tool caches (mypy, pytest, and pyright in Phase 1)
+.mypy_cache/
+.pytest_cache/
+.pyright/
+
+# Test coverage
+.coverage
+.coverage.*
+htmlcov/
+
+# Notebooks (docs phase)
+.ipynb_checkpoints/
+
+# Editor settings (personal)
+.vscode/
+.idea/
+
+# Secrets
+.env
