@@ -1,7 +1,7 @@
 [project]
 name = "opsia"
 version = "0.1.0"
-description = "Add your description here"
+description = "Presentation-grade charts in Python."
 readme = "README.md"
 authors = [
     { name = "Osama Shahatit", email = "osamaa.shahatit@gmail.com" }
@@ -14,17 +14,28 @@ dependencies = [
     "pyyaml>=6.0.3",
 ]
 
-[project.scripts]
-opsia = "opsia:main"
-
 [build-system]
 requires = ["uv_build>=0.12.10,<0.13.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "mypy>=2.3.1",
+    "pandas-stubs>=3.0.5.260914",
+    "pyright>=1.1.414",
+    "pytest>=9.1.1",
     "ruff>=0.16.9",
 ]
 
 [tool.ruff]
 line-length = 88
+
+[tool.mypy]
+strict = true
+
+[tool.pyright]
+include = ["src", "tests"]
+typeCheckingMode = "strict"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
