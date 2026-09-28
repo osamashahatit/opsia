@@ -6,12 +6,13 @@ that can be read off the class itself are checked here. Roles whose rule
 is about behaviour ("never loops", "never mutates") are not.
 """
 
-import dataclasses
 import importlib
 import inspect
 import pkgutil
 from collections import Counter
 from types import ModuleType
+
+from pydantic import BaseModel
 
 import opsia
 
@@ -78,16 +79,13 @@ def _lacks_role(cls: type) -> bool:
 def _spec_problems(cls: type) -> list[str]:
     """List the ways a Spec class breaks its rule; empty if it follows it."""
     where = _where(cls)
-    if not dataclasses.is_dataclass(cls):
-        return [f"{where} (not a dataclass)"]
-    params = vars(cls).get("__dataclass_params__")
-    if params is None:
-        return [f"{where} (inherits @dataclass but is not decorated itself)"]
+    if not issubclass(cls, BaseModel):
+        return [f"{where} (not a Pydantic BaseModel)"]
     problems: list[str] = []
-    if not params.frozen:
+    if cls.model_config.get("frozen") is not True:
         problems.append(f"{where} (not frozen)")
-    if "__slots__" not in vars(cls):
-        problems.append(f"{where} (no slots)")
+    if cls.model_config.get("extra") != "forbid":
+        problems.append(f"{where} (extra keys not forbidden)")
     return problems
 
 
@@ -122,8 +120,8 @@ def test_branch_classes_have_no_set() -> None:
     )
 
 
-def test_spec_classes_are_frozen_slotted_dataclasses() -> None:
-    """Every Spec is declared with @dataclass(frozen=True, slots=True)."""
+def test_spec_classes_are_frozen_closed_models() -> None:
+    """Every Spec is a Pydantic model with frozen=True and extra="forbid"."""
     offenders = [
         problem
         for cls in _classes()
@@ -132,8 +130,22 @@ def test_spec_classes_are_frozen_slotted_dataclasses() -> None:
     ]
     assert not offenders, (
         f"Spec classes that break the rule: {offenders}. "
-        "Declare each with @dataclass(frozen=True, slots=True)."
+        "Inherit from BaseSpec in opsia.spec.core._types, which sets "
+        'model_config = ConfigDict(frozen=True, extra="forbid").'
     )
+
+
+def test_spec_rule_catches_each_problem() -> None:
+    """The Spec check itself reports a plain class and an open, mutable model."""
+
+    class LooseSpec(BaseModel):
+        """A model with neither frozen=True nor extra="forbid"."""
+
+    problems = _spec_problems(LooseSpec)
+    assert len(problems) == 2, problems
+    assert problems[0].endswith("LooseSpec (not frozen)")
+    assert problems[1].endswith("LooseSpec (extra keys not forbidden)")
+    assert _spec_problems(int) == ["builtins.int (not a Pydantic BaseModel)"]
 
 
 def test_class_names_are_unique() -> None:
