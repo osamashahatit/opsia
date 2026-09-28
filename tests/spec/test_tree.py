@@ -3,6 +3,7 @@
 import ast
 import doctest
 import importlib
+import inspect
 import pkgutil
 import subprocess
 import sys
@@ -200,10 +201,15 @@ def test_docstring_examples_run(name: str) -> None:
 
 
 def test_every_spec_class_has_an_examples_section() -> None:
-    """Every class in opsia.spec has a NumPy Examples section (§9.4)."""
+    """Every class in opsia.spec has a NumPy Examples section (§9.4).
+
+    The docstring is cleaned first: Python 3.13 and later strip docstring
+    indentation at compile time, while 3.12 keeps it, so the raw text
+    differs between the versions CI runs.
+    """
     offenders = [
         cls.__name__
         for cls in spec_classes()
-        if "Examples\n    --------\n" not in (cls.__doc__ or "")
+        if "\nExamples\n--------\n" not in inspect.cleandoc(cls.__doc__ or "")
     ]
     assert not offenders, f"Classes without an Examples section: {offenders}"
