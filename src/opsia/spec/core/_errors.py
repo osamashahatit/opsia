@@ -15,7 +15,8 @@ something to tell the user to give.
 ``build_spec_error`` handles a ``ValidationError``. The ``build_*_block``
 functions write the same kinds of block for mistakes found without Pydantic,
 such as a bad path given to ``replace_at``, and ``build_value_error`` joins
-blocks into one error.
+blocks into one error. ``get_node_class`` and ``compute_suggestion`` are
+shared with ``replace_at`` and the resolver, so each rule lives in one place.
 """
 
 from collections.abc import Iterable, Mapping, Sequence
@@ -264,7 +265,7 @@ def build_unknown_key_block(
         ]
         if not nodes:
             lines.append(_settings_line(node_path, settings))
-    suggestion = _suggest(key, [*settings, *nodes])
+    suggestion = compute_suggestion(key, [*settings, *nodes])
     if suggestion is not None:
         lines.append(f"Did you mean {suggestion!r}?")
     return "\n".join(lines)
@@ -332,7 +333,7 @@ def _locate(
     for position, part in enumerate(loc):
         name = str(part)
         info = current.model_fields.get(name) if isinstance(part, str) else None
-        child = _child_spec(info)
+        child = get_node_class(info)
         rest = loc[position + 1 :]
         if info is None or child is None or not rest:
             return _Located(current, node_path, name, info, rest, value)
@@ -351,7 +352,7 @@ def _build_block(items: Sequence[_Located]) -> str:
         return build_unknown_key_block(
             first.node, first.node_path, first.name, expected=expected
         )
-    child = _child_spec(first.info)
+    child = get_node_class(first.info)
     if child is not None:
         return build_node_value_block(child, first.path)
     return _leaf_block(first, first.info, items)
@@ -383,6 +384,8 @@ def _leaf_block(first: _Located, info: FieldInfo, items: Sequence[_Located]) -> 
                 return _item_block(label, item.value, accepted.by_name)
     sequence = _as_sequence(raw)
     if sequence is not None and accepted.item is not None:
+        if not sequence:
+            return _empty_list_block(first.path, accepted.item)
         for item in deeper:
             index = item.tail[-1]
             if isinstance(index, int) and 0 <= index < len(sequence):
@@ -391,6 +394,15 @@ def _leaf_block(first: _Located, info: FieldInfo, items: Sequence[_Located]) -> 
     if is_value_mapped(info):
         return _value_mapped_block(first.path, raw, accepted)
     return _item_block(first.path, raw, accepted)
+
+
+def _empty_list_block(path: str, item: _Accepted) -> str:
+    """Write the block for an empty list where at least one item is needed."""
+    noun = _NOUN[item.kinds[0]] if item.kinds else "option"
+    return (
+        f"Invalid value for {path}: an empty list.\n"
+        f"Give at least one {noun}, or leave the setting out."
+    )
 
 
 def _item_block(label: str, value: object, accepted: _Accepted) -> str:
@@ -437,7 +449,7 @@ def _valid_lines(value: object, accepted: _Accepted) -> list[str]:
         lines = [f"Valid options: {', '.join(map(repr, accepted.options))}."]
     else:
         lines = [f"Expected {_join_or(_describe(accepted))}."]
-    suggestion = _suggest(value, accepted.options)
+    suggestion = compute_suggestion(value, accepted.options)
     if suggestion is not None:
         lines.append(f"Did you mean {suggestion!r}?")
     return lines
@@ -564,8 +576,30 @@ def _show(value: object, accepted: _Accepted) -> str:
     return shown
 
 
-def _suggest(word: object, candidates: Iterable[str]) -> str | None:
-    """Return the candidate closest to a text value, ignoring case, or None."""
+def compute_suggestion(word: object, candidates: Iterable[str]) -> str | None:
+    """Return the candidate closest to a text value, ignoring case, or None.
+
+    Parameters
+    ----------
+    word
+        The value the user gave. Anything other than text has no suggestion.
+    candidates
+        The valid names or options.
+
+    Returns
+    -------
+        The closest candidate, spelt as in ``candidates``, or None when no
+        candidate is close enough.
+
+    Examples
+    --------
+    >>> compute_suggestion("colour", ["alpha", "color"])
+    'color'
+    >>> compute_suggestion("K", ["k", "m"])
+    'k'
+    >>> compute_suggestion(5, ["solid"]) is None
+    True
+    """
     if not isinstance(word, str):
         return None
     by_folded = {candidate.casefold(): candidate for candidate in candidates}
@@ -578,7 +612,7 @@ def _names_of(node: type[BaseSpec]) -> tuple[list[str], list[str]]:
     settings: list[str] = []
     nodes: list[str] = []
     for name, info in node.model_fields.items():
-        (settings if _child_spec(info) is None else nodes).append(name)
+        (settings if get_node_class(info) is None else nodes).append(name)
     return sorted(settings), sorted(nodes)
 
 
@@ -596,8 +630,32 @@ def _nodes_line(node_path: str, nodes: Sequence[str]) -> str:
     return f"Valid nodes under {node_path}: {listing}."
 
 
-def _child_spec(info: FieldInfo | None) -> type[BaseSpec] | None:
-    """Return the spec class of a child node field, or None for a setting."""
+def get_node_class(info: FieldInfo | None) -> type[BaseSpec] | None:
+    """Return the spec class of a child node field, or None for a setting.
+
+    The answer is read from the field's annotation, never from a stored
+    value: a NamedValueSpec stored in a setting is a spec object, but the
+    field holding it is a setting.
+
+    Parameters
+    ----------
+    info
+        The field's entry in a spec class's ``model_fields``, or None when
+        the name was not found.
+
+    Returns
+    -------
+        The spec class of the child node, or None when the field is a
+        setting or ``info`` is None.
+
+    Examples
+    --------
+    >>> from opsia.spec import BarFillSpec, BarsSpec
+    >>> get_node_class(BarsSpec.model_fields["fill"]) is BarFillSpec
+    True
+    >>> get_node_class(BarFillSpec.model_fields["color"]) is None
+    True
+    """
     if info is None:
         return None
     annotation = info.annotation

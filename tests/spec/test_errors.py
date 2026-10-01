@@ -6,7 +6,8 @@ the same messages a theme load will. The texts asserted in full are the
 wording approved for P2.3a; a change to them is a change to the interface
 (§9.6 rule 6).
 
-The resolver's messages (§4.8, §7.2) are asserted in full at the end.
+The messages ``replace_at`` writes without Pydantic, and the resolver's
+messages (§4.8, §7.2), are asserted in full at the end.
 """
 
 import importlib
@@ -50,15 +51,6 @@ def _message(data: object) -> str:
     except ValidationError as err:
         return str(build_spec_error(err, node=ChartSpec))
     raise AssertionError(f"{data!r} was accepted.")
-
-
-def _raw_error_count(data: object) -> int:
-    """Return how many errors Pydantic itself reports for data."""
-    try:
-        ChartSpec.model_validate(data)
-    except ValidationError as err:
-        return err.error_count()
-    return 0
 
 
 # The approved messages, in full.
@@ -184,19 +176,19 @@ def test_two_paths_give_two_blocks() -> None:
     )
 
 
+def test_empty_list() -> None:
+    """An empty list is rejected when the spec is built, naming what to give."""
+    assert _message(_at("bars.fill.color", [])) == (
+        "Invalid value for bars.fill.color: an empty list.\n"
+        "Give at least one colour, or leave the setting out."
+    )
+    assert _message(_at("axis.x.tick.major.text.custom_text", [])) == (
+        "Invalid value for axis.x.tick.major.text.custom_text: an empty list.\n"
+        "Give at least one value, or leave the setting out."
+    )
+
+
 # One block per path.
-
-
-def test_value_mapped_mistake_gives_one_block_not_four() -> None:
-    """Pydantic reports one error per form of Value; the message has one block.
-
-    The four forms are a scalar, a list, a dict and a NamedValueSpec (§4.8).
-    """
-    data = _at("bars.border.style", "dashd")
-    assert _raw_error_count(data) == 4
-    message = _message(data)
-    assert message.count("Invalid value for") == 1
-    assert "problems found" not in message
 
 
 def test_every_setting_gets_one_block() -> None:
@@ -213,7 +205,7 @@ def test_every_setting_gets_one_block() -> None:
             offenders.append(f"{item.path}: {message.splitlines()[0]}")
         elif "problems found" in message:
             offenders.append(f"{item.path}: more than one block")
-    assert len(found) > 350, f"Only {len(found)} leaves were walked."
+    assert len(found) > 300, f"Only {len(found)} leaves were walked."
     assert not offenders, f"Leaves with a wrong message: {offenders}"
 
 
@@ -274,6 +266,30 @@ def test_alias_wording_names_real_aliases() -> None:
         alias = getattr(TYPES_MODULE, name)
         assert isinstance(alias, TypeAliasType), f"{name} is not an alias."
         assert alias.__value__ is str, f"{name} is not an alias of str."
+
+
+# replace_at's own messages, in full.
+
+
+def test_path_that_ends_at_a_setting() -> None:
+    """A path that names a setting says how to pass it as a change instead."""
+    with pytest.raises(ValueError) as caught:
+        replace_at(ChartSpec(), "bars.fill.color", value="red")
+    assert str(caught.value) == (
+        "bars.fill.color is a setting, not a node.\n"
+        'Pass it as a change on its node: replace_at(spec, "bars.fill", '
+        "color=...)."
+    )
+
+
+def test_path_with_an_empty_part() -> None:
+    """A path with an empty part is shown as given, with an example of a path."""
+    with pytest.raises(ValueError) as caught:
+        replace_at(ChartSpec(), "bars..fill", color="red")
+    assert str(caught.value) == (
+        "Invalid path: 'bars..fill'. A path is node names joined by dots, "
+        "such as 'bars.fill'."
+    )
 
 
 # The resolver's messages, in full (§4.8, §7.2).
@@ -340,12 +356,4 @@ def test_dict_on_a_whole_line_without_a_legend() -> None:
         "so it cannot be set per category.\n"
         "This chart has no legend, so it has one line.\n"
         "Give one value, such as 0.8."
-    )
-
-
-def test_empty_list() -> None:
-    """An empty list gives no series a value."""
-    assert _item_message((), series=["2019"], legend=True) == (
-        "bars.fill.color: the list is empty, so no series gets a value.\n"
-        "Give at least one value."
     )

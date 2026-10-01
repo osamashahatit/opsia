@@ -11,6 +11,10 @@ again when the pinned Matplotlib version changes.
 (§9.3.1). Strictness is set per type, not model-wide, so a YAML list still
 becomes a tuple.
 
+``Items`` is every list in the spec: one or more values, stored as a tuple.
+An empty list is rejected when the spec is built, not later when a chart is
+drawn (§9.6 rule 4).
+
 ``NamedValueSpec`` is the fourth form of ``Value``: a dict laid over a
 scalar or a list (§4.8). Only ``merge_layers`` and ``replace_at`` build one;
 validation accepts an existing instance and never builds one from a dict.
@@ -130,6 +134,14 @@ type Integer = Annotated[int, Strict()]
 type Flag = Annotated[bool, Strict()]
 """A true or false setting. Strict: ``1`` and ``"true"`` are rejected."""
 
+type Items[T] = Annotated[tuple[T, ...], Field(min_length=1)]
+"""A list of one or more values, stored as a tuple.
+
+A list passed in is stored as a tuple, so a frozen spec holds no list
+(§3.5.2). An empty list is rejected: it would give no series and no tick a
+value, and the mistake would otherwise surface only when a chart is drawn.
+"""
+
 type ByName[T] = Annotated[
     Mapping[str, T], AfterValidator(MappingProxyType), WrapSerializer(_as_dict)
 ]
@@ -143,7 +155,7 @@ is written out as a plain dict by ``model_dump()``.
 
 type Value[T] = Annotated[
     T
-    | tuple[T, ...]
+    | Items[T]
     | ByName[T]
     | SkipJsonSchema[Annotated[NamedValueSpec[T], PlainValidator(_keep_named)]],
     WrapSerializer(_dump_value),
@@ -151,9 +163,9 @@ type Value[T] = Annotated[
 """A value-mapped setting: one value, one per series in order, or by name (§4.8).
 
 A scalar applies to every artist. A tuple is assigned to series in order and
-wraps when shorter; a list passed in is stored as a tuple. A mapping is looked
-up by series name when a legend column is set, and by category name
-otherwise; it is stored read-only.
+wraps when shorter; a list passed in is stored as a tuple, and must hold at
+least one value. A mapping is looked up by series name when a legend column
+is set, and by category name otherwise; it is stored read-only.
 
 The fourth form, ``NamedValueSpec``, is a mapping laid over a scalar or a
 tuple. Only an existing instance is accepted, it is left out of the JSON
@@ -317,7 +329,7 @@ class NamedValueSpec[T](BaseSpec):
     names: ByName[T] = Field(
         description="The values given by series or category name.",
     )
-    rest: T | tuple[T, ...] = Field(
+    rest: T | Items[T] = Field(
         description="The value or per-series values for every other name.",
     )
 

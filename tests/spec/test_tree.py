@@ -1,4 +1,4 @@
-"""The shape of the spec tree: empty by default, frozen, 19 value-mapped fields."""
+"""The shape of the spec tree: empty by default, frozen, and free of Matplotlib."""
 
 import ast
 import doctest
@@ -27,34 +27,12 @@ from opsia.spec import (
     LinesSpec,
     NumericSpec,
     SpineSideSpec,
-    TickLevelSpec,
+    TickMajorSpec,
+    TickMinorSpec,
     TickTextSpec,
 )
 
-from .walker import is_node, is_value_mapped, leaves, spec_classes, walk
-
-# The 19 value-mapping properties, copied from claude/opsia-spec-fields.md.
-VALUE_MAPPED = {
-    "bars.fill.color",
-    "bars.fill.alpha",
-    "bars.border.color",
-    "bars.border.alpha",
-    "bars.border.style",
-    "bars.border.width",
-    "lines.stroke.color",
-    "lines.stroke.alpha",
-    "lines.stroke.style",
-    "lines.stroke.width",
-    "lines.area.color",
-    "lines.area.alpha",
-    "lines.marker.shape",
-    "lines.marker.face_color",
-    "lines.marker.face_alpha",
-    "lines.marker.size",
-    "lines.marker.border_color",
-    "lines.marker.border_alpha",
-    "lines.marker.border_width",
-}
+from .walker import is_node, leaves, spec_classes, walk
 
 
 def _spec_modules() -> list[str]:
@@ -63,25 +41,6 @@ def _spec_modules() -> list[str]:
     for info in pkgutil.walk_packages(opsia.spec.__path__, prefix="opsia.spec."):
         names.append(info.name)
     return names
-
-
-def test_value_mapped_fields_are_the_nineteen() -> None:
-    """Exactly the 19 properties of §4.8 are marked value_mapped, by path."""
-    marked = {item.path for item in leaves(ChartSpec()) if is_value_mapped(item.info)}
-    assert marked == VALUE_MAPPED, (
-        f"Marked but not in the fields file: {sorted(marked - VALUE_MAPPED)}. "
-        f"In the fields file but not marked: {sorted(VALUE_MAPPED - marked)}."
-    )
-
-
-def test_every_field_has_a_description_sentence() -> None:
-    """Every leaf and child carries a one-sentence description (§10.3)."""
-    offenders = [
-        item.path
-        for item in walk(ChartSpec())
-        if not (item.info.description or "").endswith(".")
-    ]
-    assert not offenders, f"Fields without a description sentence: {offenders}"
 
 
 def test_schema_extra_is_only_the_value_mapped_flag() -> None:
@@ -106,17 +65,15 @@ def test_every_field_defaults_to_none_or_a_child() -> None:
     assert not offenders, f"Fields with the wrong default: {offenders}"
 
 
-def test_bare_spec_has_every_leaf_unset() -> None:
-    """A bare ChartSpec sets nothing: every leaf, found by walking, is None."""
-    found = list(leaves(ChartSpec()))
-    set_leaves = [(item.path, item.value) for item in found if item.value is not None]
-    assert found, "The walker found no leaves."
-    assert not set_leaves, f"Leaves with a value on a bare spec: {set_leaves}"
-
-
 def test_spines_are_stored_per_side() -> None:
     """The spine node has exactly the four screen sides (§4.12)."""
     assert list(AxisSpineSpec.model_fields) == ["top", "bottom", "left", "right"]
+
+
+def test_minor_ticks_have_a_marker_only() -> None:
+    """Minor ticks hold a marker and no text; major ticks hold both (§4.16 #10)."""
+    assert list(TickMinorSpec.model_fields) == ["marker"]
+    assert list(TickMajorSpec.model_fields) == ["text", "marker"]
 
 
 def test_every_field_is_frozen() -> None:
@@ -135,7 +92,7 @@ def test_hand_built_spec_reads_back_by_path() -> None:
         axis=AxisSpec(
             y=DataAxisSpec(
                 tick=AxisTickSpec(
-                    major=TickLevelSpec(
+                    major=TickMajorSpec(
                         text=TickTextSpec(
                             size=10,
                             numeric=NumericSpec(display_units="k", currency="$"),

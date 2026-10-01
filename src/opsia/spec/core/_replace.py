@@ -17,7 +17,6 @@ validation (§9.3.1 rule 1).
 """
 
 from pydantic import ValidationError
-from pydantic.fields import FieldInfo
 
 from opsia.spec.core._errors import (
     build_node_value_block,
@@ -25,6 +24,7 @@ from opsia.spec.core._errors import (
     build_spec_error,
     build_unknown_key_block,
     build_value_error,
+    get_node_class,
 )
 from opsia.spec.core._merge import layer_value
 from opsia.spec.core._types import BaseSpec, is_value_mapped
@@ -133,7 +133,7 @@ def _walk(spec: BaseSpec, names: list[str]) -> list[BaseSpec]:
             )
             raise build_value_error([block])
         child: object = getattr(current, name)
-        if _node_class(info) is None or not isinstance(child, BaseSpec):
+        if get_node_class(info) is None or not isinstance(child, BaseSpec):
             raise build_value_error([build_setting_path_block(node_path, name)])
         chain.append(child)
         node_path = f"{node_path}.{name}" if node_path else name
@@ -153,7 +153,7 @@ def _check_change_names(
                 build_unknown_key_block(type(target), path, name, expected="setting")
             )
             continue
-        node = _node_class(info)
+        node = get_node_class(info)
         if node is not None:
             blocks.append(build_node_value_block(node, f"{path}.{name}"))
     if blocks:
@@ -196,11 +196,3 @@ def _rebuild[N: BaseSpec](node: N, changes: dict[str, object], *, prefix: str) -
         return type(node).model_validate(data)
     except ValidationError as err:
         raise build_spec_error(err, node=type(node), prefix=prefix) from err
-
-
-def _node_class(info: FieldInfo) -> type[BaseSpec] | None:
-    """Return the spec class of a child node field, or None for a setting."""
-    annotation = info.annotation
-    if isinstance(annotation, type) and issubclass(annotation, BaseSpec):
-        return annotation
-    return None

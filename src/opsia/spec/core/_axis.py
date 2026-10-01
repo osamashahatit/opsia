@@ -13,6 +13,7 @@ from opsia.spec.core._types import (
     FontName,
     HorizontalAlignment,
     Integer,
+    Items,
     LineStyle,
     Number,
     NumericSpec,
@@ -21,7 +22,9 @@ from opsia.spec.core._types import (
 
 
 class TickTextSpec(BaseSpec):
-    """The text of the major or minor tick labels on one axis.
+    """The text of the major tick labels on one axis.
+
+    Minor ticks have no text: labels on minor ticks are postponed (§4.16 #10).
 
     Examples
     --------
@@ -68,7 +71,7 @@ class TickTextSpec(BaseSpec):
         default=None,
         description='The most characters a tick label keeps; "none" keeps them all.',
     )
-    custom_text: tuple[str, ...] | Literal["none"] | None = Field(
+    custom_text: Items[str] | Literal["none"] | None = Field(
         default=None,
         description='The words that replace the tick labels, in order; "none" keeps '
         "the computed labels.",
@@ -137,12 +140,12 @@ class TickMarkerSpec(BaseSpec):
     )
 
 
-class TickLevelSpec(BaseSpec):
-    """One level of ticks on one axis, major or minor: its text and its mark.
+class TickMajorSpec(BaseSpec):
+    """The major ticks of one axis: their text and their mark.
 
     Examples
     --------
-    >>> spec = TickLevelSpec(text=TickTextSpec(size=9))
+    >>> spec = TickMajorSpec(text=TickTextSpec(size=9))
     >>> spec.text.size
     9.0
     >>> spec.marker.show is None
@@ -151,11 +154,30 @@ class TickLevelSpec(BaseSpec):
 
     text: TickTextSpec = Field(
         default_factory=TickTextSpec,
-        description="The tick labels at this level.",
+        description="The tick labels at major ticks.",
     )
     marker: TickMarkerSpec = Field(
         default_factory=TickMarkerSpec,
-        description="The tick marks at this level.",
+        description="The tick marks at major ticks.",
+    )
+
+
+class TickMinorSpec(BaseSpec):
+    """The minor ticks of one axis: their mark only.
+
+    Minor ticks have no text node. Labels on minor ticks are postponed
+    (§4.16 #10, §9.9); adding them later breaks no theme file (§5.9).
+
+    Examples
+    --------
+    >>> spec = TickMinorSpec(marker=TickMarkerSpec(show=False))
+    >>> spec.marker.show
+    False
+    """
+
+    marker: TickMarkerSpec = Field(
+        default_factory=TickMarkerSpec,
+        description="The tick marks at minor ticks.",
     )
 
 
@@ -164,17 +186,17 @@ class AxisTickSpec(BaseSpec):
 
     Examples
     --------
-    >>> spec = AxisTickSpec(minor=TickLevelSpec(marker=TickMarkerSpec(show=False)))
+    >>> spec = AxisTickSpec(minor=TickMinorSpec(marker=TickMarkerSpec(show=False)))
     >>> spec.minor.marker.show
     False
     """
 
-    major: TickLevelSpec = Field(
-        default_factory=TickLevelSpec,
+    major: TickMajorSpec = Field(
+        default_factory=TickMajorSpec,
         description="The major ticks.",
     )
-    minor: TickLevelSpec = Field(
-        default_factory=TickLevelSpec,
+    minor: TickMinorSpec = Field(
+        default_factory=TickMinorSpec,
         description="The minor ticks.",
     )
 

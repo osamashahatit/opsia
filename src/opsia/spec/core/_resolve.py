@@ -18,9 +18,9 @@ at draw time.
 """
 
 from collections.abc import Mapping, Sequence
-from difflib import get_close_matches
 from typing import cast
 
+from opsia.spec.core._errors import compute_suggestion
 from opsia.spec.core._types import NamedValueSpec, Value
 
 _WHOLE_LINE_WORDS = {
@@ -100,7 +100,7 @@ def resolve_per_item[T](
     names, rest = _split(value)
     keys = series if legend else categories
     _check_names(names, keys, path=path, legend=legend)
-    spread = _spread(rest, series, path=path)
+    spread = _spread(rest, series)
     result: dict[tuple[str, str], T] = {}
     missing: list[str] = []
     for one_series in series:
@@ -190,7 +190,7 @@ def resolve_per_series[T](
     if names and not legend:
         raise ValueError(_whole_line_message(path))
     _check_names(names, series, path=path, legend=legend)
-    spread = _spread(rest, series, path=path)
+    spread = _spread(rest, series)
     result: dict[str, T] = {}
     missing: list[str] = []
     for one_series in series:
@@ -222,20 +222,17 @@ def _split[T](value: Value[T]) -> tuple[Mapping[str, T], "T | tuple[T, ...] | No
     return {}, cast("T | tuple[T, ...]", raw)
 
 
-def _spread[T](
-    rest: "T | tuple[T, ...] | None", series: Sequence[str], *, path: str
-) -> dict[str, T]:
-    """Give each series its value from a scalar or a list; nothing for None."""
+def _spread[T](rest: "T | tuple[T, ...] | None", series: Sequence[str]) -> dict[str, T]:
+    """Give each series its value from a scalar or a list; nothing for None.
+
+    A list is never empty: validation rejects an empty list before it is
+    stored (``Items``, §9.6 rule 4).
+    """
     raw: object = rest
     if raw is None:
         return {}
     if isinstance(raw, tuple):
         items = cast("tuple[T, ...]", raw)
-        if not items:
-            raise ValueError(
-                f"{path}: the list is empty, so no series gets a value.\n"
-                "Give at least one value."
-            )
         return {name: items[index % len(items)] for index, name in enumerate(series)}
     one = cast("T", raw)
     return dict.fromkeys(series, one)
@@ -266,7 +263,7 @@ def _check_names(
         lines = [f"Unknown names in {path}: {', '.join(map(repr, unknown))}."]
     lines.append(f"Valid {kind}: {listing}.")
     if len(unknown) == 1:
-        suggestion = _suggest(unknown[0], valid)
+        suggestion = compute_suggestion(unknown[0], valid)
         if suggestion is not None:
             lines.append(f"Did you mean {suggestion!r}?")
     raise ValueError("\n".join(lines))
@@ -293,10 +290,3 @@ def _whole_line_message(path: str) -> str:
         "This chart has no legend, so it has one line.\n"
         f"Give one value, such as {example}."
     )
-
-
-def _suggest(word: str, candidates: Sequence[str]) -> str | None:
-    """Return the candidate closest to a word, ignoring case, or None."""
-    by_folded = {candidate.casefold(): candidate for candidate in candidates}
-    matches = get_close_matches(word.casefold(), list(by_folded), n=1)
-    return by_folded[matches[0]] if matches else None

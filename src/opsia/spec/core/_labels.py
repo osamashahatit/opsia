@@ -21,6 +21,7 @@ from opsia.spec.core._types import (
     FrameTextVerticalAlignment,
     HorizontalAlignment,
     Integer,
+    Items,
     LineStyle,
     Number,
     NumericSpec,
@@ -288,7 +289,7 @@ class LineStandardLabelSpec(BaseSpec):
         default=None,
         description="The vertical shift of each point label, in points.",
     )
-    series: Literal["all"] | tuple[str, ...] | None = Field(
+    series: Literal["all"] | Items[str] | None = Field(
         default=None,
         description='The names of the lines that get labels; "all" labels every line.',
     )

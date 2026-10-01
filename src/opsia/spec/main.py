@@ -34,8 +34,9 @@ from opsia.spec.core._axis import (
     DataAxisSpec,
     GridLineSpec,
     SpineSideSpec,
-    TickLevelSpec,
+    TickMajorSpec,
     TickMarkerSpec,
+    TickMinorSpec,
     TickTextSpec,
 )
 from opsia.spec.core._bars import BarBorderSpec, BarFillSpec, BarLayoutSpec, BarsSpec
@@ -126,8 +127,9 @@ __all__ = [
     "NumericSpec",
     "Position",
     "SpineSideSpec",
-    "TickLevelSpec",
+    "TickMajorSpec",
     "TickMarkerSpec",
+    "TickMinorSpec",
     "TickTextSpec",
     "Value",
     "build_spec_error",

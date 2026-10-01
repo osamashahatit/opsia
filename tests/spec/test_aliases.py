@@ -19,6 +19,7 @@ from typing import TypeAliasType
 
 import pytest
 from pydantic import AfterValidator, PlainValidator, Strict, WrapSerializer
+from pydantic.fields import FieldInfo
 
 from opsia.spec import NamedValueSpec
 
@@ -55,7 +56,7 @@ STRING_ALIASES = ("Color", "FontName")
 
 STRICT_ALIASES: dict[str, type] = {"Number": float, "Integer": int, "Flag": bool}
 
-GENERIC_ALIASES = ("ByName", "Value")
+GENERIC_ALIASES = ("ByName", "Items", "Value")
 
 
 def _alias(name: str) -> TypeAliasType:
@@ -138,8 +139,24 @@ def test_by_name_is_a_read_only_mapping() -> None:
     assert len(metadata) == 2, f"ByName carries extra metadata: {metadata!r}."
 
 
+def test_items_is_a_tuple_of_at_least_one() -> None:
+    """Items[T] is tuple[T, ...] with a minimum length of one, and nothing more."""
+    alias = _alias("Items")
+    (param,) = alias.__type_params__
+    value = alias.__value__
+    assert typing.get_origin(value) is typing.Annotated
+    sequence, *metadata = typing.get_args(value)
+    assert typing.get_origin(sequence) is tuple
+    assert typing.get_args(sequence) == (param, ...)
+    assert len(metadata) == 1, f"Items carries {metadata!r}."
+    field = metadata[0]
+    assert isinstance(field, FieldInfo), f"Items carries {field!r}."
+    lengths = [getattr(item, "min_length", None) for item in field.metadata]
+    assert lengths == [1], f"Items has the constraints {field.metadata!r}."
+
+
 def test_value_is_four_forms_under_one_serializer() -> None:
-    """Value[T] is T, tuple[T, ...], ByName[T] and NamedValueSpec[T] (§4.8).
+    """Value[T] is T, Items[T], ByName[T] and NamedValueSpec[T] (§4.8).
 
     The four forms sit under one serializer, which writes a NamedValueSpec
     as a dict. The fourth form is checked by ``_keep_named`` alone, so only
@@ -155,8 +172,8 @@ def test_value_is_four_forms_under_one_serializer() -> None:
 
     scalar, per_series, by_name, named = typing.get_args(union)
     assert scalar is param
-    assert typing.get_origin(per_series) is tuple
-    assert typing.get_args(per_series) == (param, ...)
+    assert typing.get_origin(per_series) is _alias("Items")
+    assert typing.get_args(per_series) == (param,)
     assert typing.get_origin(by_name) is _alias("ByName")
     assert typing.get_args(by_name) == (param,)
 

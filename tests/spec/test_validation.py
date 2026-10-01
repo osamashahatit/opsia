@@ -74,6 +74,15 @@ def _read(spec: BaseModel, path: str) -> object:
     return node
 
 
+def _accepts(data: object) -> bool:
+    """Say whether data validates as a whole chart spec."""
+    try:
+        ChartSpec.model_validate(data)
+    except ValidationError:
+        return False
+    return True
+
+
 def _is_read_only_mapping(value: object) -> bool:
     """Say whether a value is stored as a MappingProxyType."""
     return isinstance(value, MappingProxyType)
@@ -159,6 +168,19 @@ def test_list_is_stored_as_tuple(path: str, given: object, stored: object) -> No
     value = _read(ChartSpec.model_validate(_at(path, given)), path)
     assert value == stored
     assert type(value) is tuple
+
+
+def test_no_setting_accepts_an_empty_list() -> None:
+    """An empty list is rejected at every leaf, so it never reaches the resolver.
+
+    The rest of a NamedValueSpec holds to the same rule (§9.6 rule 4).
+    """
+    accepted = [
+        item.path for item in leaves(ChartSpec()) if _accepts(_at(item.path, []))
+    ]
+    assert not accepted, f"Settings that accept an empty list: {accepted}"
+    with pytest.raises(ValidationError):
+        NamedValueSpec[str](names={}, rest=())
 
 
 @pytest.mark.parametrize(
