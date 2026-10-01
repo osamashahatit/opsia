@@ -1,43 +1,51 @@
 """Validation on the Pydantic specs: what a theme file or a hand-built spec meets.
 
-Every case goes through ``ChartSpec.model_validate`` with the nested dict a
+Most cases go through ``ChartSpec.model_validate`` with the nested dict a
 YAML theme file would give, so the tests exercise the same path a theme load
-will (§5.1). Reshaping errors into one message per path is P2.3 work; these
-tests only check what Pydantic reports.
+will (§5.1). The strict aliases are tested once each, on their own, and a
+walk over the tree checks that every number and flag uses them. The wording
+of error messages is tested in ``test_errors.py``.
 """
 
 from collections.abc import Iterator
 from types import MappingProxyType
-from typing import Any
+from typing import Annotated, Any, TypeAliasType, get_args, get_origin
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from opsia.spec import BarFillSpec, ChartSpec
+from opsia.spec import BarFillSpec, ChartSpec, Flag, Integer, Number, Value
 
-from .test_tree import VALUE_MAPPED
 from .walker import leaves
 
-NUMBER_PATHS = (
-    "bars.layout.width",
-    "axis.y.scale.min_value",
-    "legend.frame.border_radius",
+# The 19 value-mapping properties, copied from claude/opsia-spec-fields.md.
+VALUE_MAPPED = {
+    "bars.fill.color",
+    "bars.fill.alpha",
+    "bars.border.color",
+    "bars.border.alpha",
+    "bars.border.style",
     "bars.border.width",
+    "lines.stroke.color",
+    "lines.stroke.alpha",
+    "lines.stroke.style",
+    "lines.stroke.width",
+    "lines.area.color",
+    "lines.area.alpha",
+    "lines.marker.shape",
+    "lines.marker.face_color",
+    "lines.marker.face_alpha",
     "lines.marker.size",
-)
-"""Number leaves, plain and inside Value[Number]."""
+    "lines.marker.border_color",
+    "lines.marker.border_alpha",
+    "lines.marker.border_width",
+}
 
-INTEGER_PATHS = (
-    "bars.label.standard.hide_smallest",
-    "axis.y.scale.minor_divisions",
-    "axis.x.tick.major.text.numeric.decimals",
-)
+STRICT_ALIASES: tuple[TypeAliasType, ...] = (Number, Integer, Flag)
+"""The aliases that every number and flag in the spec must use (§9.3.1 rule 4)."""
 
-FLAG_PATHS = (
-    "legend.layout.show",
-    "axis.spine.top.show",
-    "bars.label.standard.numeric.separator",
-)
+BARE_TYPES = (float, int, bool)
+"""Types that Pydantic would convert silently if used without the aliases."""
 
 
 def _at(path: str, value: object) -> dict[str, object]:
@@ -57,24 +65,15 @@ def _read(spec: BaseModel, path: str) -> object:
     return node
 
 
-def _rejects(path: str, value: object) -> bool:
-    """Say whether building a spec with value at path raises a ValidationError."""
-    try:
-        ChartSpec.model_validate(_at(path, value))
-    except ValidationError:
-        return True
-    return False
-
-
 def _is_read_only_mapping(value: object) -> bool:
     """Say whether a value is stored as a MappingProxyType."""
     return isinstance(value, MappingProxyType)
 
 
-def _schema_leaves(
+def _schema_fields(
     schema: dict[str, Any], node: dict[str, Any], prefix: str = ""
-) -> Iterator[tuple[str, dict[str, Any]]]:
-    """Yield (dotted path, property) for every leaf in a model's JSON Schema."""
+) -> Iterator[tuple[str, dict[str, Any], bool]]:
+    """Yield (dotted path, property, is a node) for every field in a JSON Schema."""
     definitions: dict[str, Any] = schema["$defs"]
     for name, prop in node["properties"].items():
         path = f"{prefix}{name}"
@@ -83,9 +82,35 @@ def _schema_leaves(
             definitions.get(ref.rsplit("/", 1)[-1], {}) if ref else {}
         )
         if "properties" in target:
-            yield from _schema_leaves(schema, target, f"{path}.")
+            yield path, prop, True
+            yield from _schema_fields(schema, target, f"{path}.")
         else:
+            yield path, prop, False
+
+
+def _schema_leaves(schema: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Yield (dotted path, property) for every leaf in a model's JSON Schema."""
+    for path, prop, is_node in _schema_fields(schema, schema):
+        if not is_node:
             yield path, prop
+
+
+def _bare_types(annotation: object) -> list[str]:
+    """Name every float, int or bool in an annotation not wrapped in a strict alias."""
+    if any(annotation is alias for alias in STRICT_ALIASES):
+        return []
+    if any(annotation is bare for bare in BARE_TYPES):
+        return [str(getattr(annotation, "__name__", annotation))]
+    if isinstance(annotation, TypeAliasType):
+        return _bare_types(annotation.__value__)
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    if origin is Annotated:
+        args = args[:1]
+    found = _bare_types(origin) if isinstance(origin, TypeAliasType) else []
+    for arg in args:
+        found.extend(_bare_types(arg))
+    return found
 
 
 # Errors name the path.
@@ -150,54 +175,67 @@ def test_mapping_is_read_only(path: str, item: object) -> None:
 # Numbers and booleans are strict.
 
 
-@pytest.mark.parametrize("path", NUMBER_PATHS)
-@pytest.mark.parametrize("bad", ["1", True, False])
-def test_number_leaf_rejects_text_and_booleans(path: str, bad: object) -> None:
-    """A Number leaf rejects "1", True and False instead of converting them."""
-    assert _rejects(path, bad), f"{path} accepted {bad!r}."
+def test_every_number_and_flag_uses_a_strict_alias() -> None:
+    """No leaf holds a bare float, int or bool, which would accept "1" or True."""
+    offenders = [
+        f"{item.path}: {', '.join(bare)}"
+        for item in leaves(ChartSpec())
+        if (bare := _bare_types(item.info.annotation))
+    ]
+    assert not offenders, (
+        f"Use Number, Integer or Flag instead of a bare type at: {offenders}"
+    )
 
 
-@pytest.mark.parametrize("path", NUMBER_PATHS)
-def test_number_leaf_accepts_a_whole_number_as_float(path: str) -> None:
-    """A Number leaf accepts 1 and stores it as 1.0."""
-    value = _read(ChartSpec.model_validate(_at(path, 1)), path)
-    assert value == 1.0
-    assert type(value) is float
+def test_bare_type_check_catches_each_kind() -> None:
+    """The check itself finds bare types, also inside unions and Value."""
+    assert _bare_types(float | None) == ["float"]
+    assert _bare_types(Value[int] | None) == ["int"]
+    assert _bare_types(bool | str) == ["bool"]
+    assert _bare_types(Number | None) == []
+    assert _bare_types(Value[Number] | None) == []
+    assert _bare_types(Integer | Flag) == []
 
 
-@pytest.mark.parametrize("path", INTEGER_PATHS)
-@pytest.mark.parametrize("bad", ["1", True, 1.0])
-def test_integer_leaf_rejects_text_booleans_and_floats(path: str, bad: object) -> None:
-    """An Integer leaf rejects "1", True and 1.0."""
-    assert _rejects(path, bad), f"{path} accepted {bad!r}."
+def test_number_alias() -> None:
+    """Number accepts whole and decimal numbers as floats; rejects text and bools."""
+    adapter = TypeAdapter[float](Number)
+    assert adapter.validate_python(1) == 1.0
+    assert type(adapter.validate_python(1)) is float
+    assert adapter.validate_python(0.5) == 0.5
+    for bad in ("1", True, False):
+        with pytest.raises(ValidationError):
+            adapter.validate_python(bad)
 
 
-@pytest.mark.parametrize("path", INTEGER_PATHS)
-def test_integer_leaf_accepts_a_whole_number(path: str) -> None:
-    """An Integer leaf accepts 1 and stores it as an int."""
-    value = _read(ChartSpec.model_validate(_at(path, 1)), path)
-    assert value == 1
-    assert type(value) is int
+def test_integer_alias() -> None:
+    """Integer accepts whole numbers; rejects text, booleans and floats."""
+    adapter = TypeAdapter[int](Integer)
+    assert adapter.validate_python(1) == 1
+    assert type(adapter.validate_python(1)) is int
+    for bad in ("1", True, 1.0):
+        with pytest.raises(ValidationError):
+            adapter.validate_python(bad)
 
 
-@pytest.mark.parametrize("path", FLAG_PATHS)
-@pytest.mark.parametrize("bad", ["1", "true", 1, 0])
-def test_flag_leaf_rejects_text_and_numbers(path: str, bad: object) -> None:
-    """A Flag leaf rejects "1", "true", 1 and 0 instead of converting them."""
-    assert _rejects(path, bad), f"{path} accepted {bad!r}."
+def test_flag_alias() -> None:
+    """Flag accepts True and False; rejects text and numbers."""
+    adapter = TypeAdapter[bool](Flag)
+    assert adapter.validate_python(True) is True
+    assert adapter.validate_python(False) is False
+    for bad in ("1", "true", 1, 0):
+        with pytest.raises(ValidationError):
+            adapter.validate_python(bad)
 
 
-@pytest.mark.parametrize("path", FLAG_PATHS)
-@pytest.mark.parametrize("good", [True, False])
-def test_flag_leaf_accepts_booleans(path: str, good: bool) -> None:
-    """A Flag leaf accepts True and False."""
-    assert _read(ChartSpec.model_validate(_at(path, good)), path) is good
-
-
-@pytest.mark.parametrize("bad", [["1"], [True], {"2019": "1"}, {"2019": True}])
-def test_strictness_holds_inside_value_forms(bad: object) -> None:
-    """Value[Number] is strict inside its tuple and mapping forms too."""
-    assert _rejects("bars.border.width", bad), f"accepted {bad!r}."
+def test_value_alias_keeps_strictness_in_every_form() -> None:
+    """Value[Number] is strict in its single, list and dict forms alike."""
+    adapter = TypeAdapter[object](Value[Number])
+    assert adapter.validate_python([1, 2.5]) == (1.0, 2.5)
+    assert adapter.validate_python({"2019": 1}) == {"2019": 1.0}
+    for bad in ("1", ["1"], [True], {"2019": "1"}, {"2019": True}):
+        with pytest.raises(ValidationError):
+            adapter.validate_python(bad)
 
 
 # What was set, and the JSON Schema.
@@ -216,7 +254,7 @@ def test_fields_set_reports_only_what_was_given() -> None:
 def test_schema_lists_every_leaf() -> None:
     """The JSON Schema, walked by path, has exactly the leaves the model has."""
     schema = ChartSpec.model_json_schema()
-    from_schema = {path for path, _ in _schema_leaves(schema, schema)}
+    from_schema = {path for path, _ in _schema_leaves(schema)}
     from_model = {item.path for item in leaves(ChartSpec())}
     assert from_schema == from_model, (
         f"Only in the schema: {sorted(from_schema - from_model)}. "
@@ -224,15 +262,17 @@ def test_schema_lists_every_leaf() -> None:
     )
 
 
-def test_schema_leaf_descriptions_are_sentences() -> None:
-    """Every leaf in the JSON Schema has a description ending in a full stop."""
+def test_schema_descriptions_are_sentences() -> None:
+    """Every field in the JSON Schema, node or leaf, has a description sentence."""
     schema = ChartSpec.model_json_schema()
+    found = list(_schema_fields(schema, schema))
     offenders = [
         path
-        for path, prop in _schema_leaves(schema, schema)
+        for path, prop, _ in found
         if not str(prop.get("description", "")).endswith(".")
     ]
-    assert not offenders, f"Schema leaves without a description sentence: {offenders}"
+    assert any(is_node for _, _, is_node in found), "No nodes were walked."
+    assert not offenders, f"Schema fields without a description sentence: {offenders}"
 
 
 def test_schema_marks_exactly_the_nineteen_value_mapped_paths() -> None:
@@ -240,7 +280,7 @@ def test_schema_marks_exactly_the_nineteen_value_mapped_paths() -> None:
     schema = ChartSpec.model_json_schema()
     marked = {
         path
-        for path, prop in _schema_leaves(schema, schema)
+        for path, prop in _schema_leaves(schema)
         if prop.get("value_mapped") is True
     }
     assert marked == VALUE_MAPPED, (
@@ -249,7 +289,7 @@ def test_schema_marks_exactly_the_nineteen_value_mapped_paths() -> None:
     )
 
 
-# Dumping, which P2.3's replace_at depends on.
+# Dumping a spec back to plain data.
 
 
 @pytest.mark.filterwarnings("error")

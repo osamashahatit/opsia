@@ -8,6 +8,12 @@ meaning not set (§5.4). Specs are never edited; a change builds a new one
 
 Every spec is a frozen Pydantic model that rejects unknown keys (§9.3.1),
 so a bad value or a misspelt key is caught when a spec is built.
+
+Three helpers work on whole specs. ``replace_at`` changes one node and
+returns a new tree (§3.5.2), ``merge_layers`` lays one spec over another
+(§5.4), and ``build_spec_error`` turns a Pydantic validation error into one
+readable ``ValueError`` (§9.6). Recorders and the theme loader call them;
+users do not.
 """
 
 from pydantic import Field
@@ -28,6 +34,7 @@ from opsia.spec.core._axis import (
     TickTextSpec,
 )
 from opsia.spec.core._bars import BarBorderSpec, BarFillSpec, BarLayoutSpec, BarsSpec
+from opsia.spec.core._errors import build_spec_error
 from opsia.spec.core._labels import (
     BarCategoryLabelSpec,
     BarLabelSpec,
@@ -51,6 +58,8 @@ from opsia.spec.core._lines import (
     LinesSpec,
     LineStrokeSpec,
 )
+from opsia.spec.core._merge import merge_layers
+from opsia.spec.core._replace import replace_at
 from opsia.spec.core._types import (
     BaseSpec,
     ByName,
@@ -113,6 +122,9 @@ __all__ = [
     "TickMarkerSpec",
     "TickTextSpec",
     "Value",
+    "build_spec_error",
+    "merge_layers",
+    "replace_at",
 ]
 
 
