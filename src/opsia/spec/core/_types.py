@@ -11,6 +11,10 @@ again when the pinned Matplotlib version changes.
 (§9.3.1). Strictness is set per type, not model-wide, so a YAML list still
 becomes a tuple.
 
+``NamedValueSpec`` is the fourth form of ``Value``: a dict laid over a
+scalar or a list (§4.8). Only ``merge_layers`` and ``replace_at`` build one;
+validation accepts an existing instance and never builds one from a dict.
+
 This module imports nothing from Matplotlib.
 """
 
@@ -23,10 +27,14 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PlainValidator,
+    SerializationInfo,
     SerializerFunctionWrapHandler,
     Strict,
     WrapSerializer,
 )
+from pydantic.fields import FieldInfo
+from pydantic.json_schema import SkipJsonSchema
 
 
 def _as_dict(
@@ -61,6 +69,54 @@ def _as_dict(
     return handler(dict(value))
 
 
+def _keep_named(value: object) -> object:
+    """Accept an existing NamedValueSpec as it is; reject everything else.
+
+    This is the whole validation of the fourth form of ``Value``. A dict is
+    rejected here, so it can only become the by-name form, even when its
+    keys are ``names`` and ``rest`` (§4.8).
+
+    The value is returned through ``kept``, whose declared type stays
+    ``object``: the ``isinstance`` check would otherwise narrow it to a
+    ``NamedValueSpec`` of unknown item type, which strict pyright rejects.
+
+    Examples
+    --------
+    >>> named = NamedValueSpec(names={"2019": "#E24A33"}, rest="#CCCCCC")
+    >>> _keep_named(named) is named
+    True
+    >>> _keep_named({"names": {}, "rest": "#CCCCCC"})
+    Traceback (most recent call last):
+    ...
+    ValueError: Only Opsia builds a NamedValueSpec; this value is not one.
+    """
+    kept: object = value
+    if isinstance(value, NamedValueSpec):
+        return kept
+    raise ValueError("Only Opsia builds a NamedValueSpec; this value is not one.")
+
+
+def _dump_value(
+    value: object, handler: SerializerFunctionWrapHandler, info: SerializationInfo
+) -> object:
+    """Serialize a value-mapped setting, writing a NamedValueSpec as a dict.
+
+    The other three forms go to Pydantic's own serializer. A NamedValueSpec
+    is written as ``{"names": ..., "rest": ...}``; read back, that becomes a
+    plain by-name dict, not a NamedValueSpec.
+
+    Examples
+    --------
+    >>> from opsia.spec import BarFillSpec
+    >>> named = NamedValueSpec(names={"2019": "#E24A33"}, rest="#CCCCCC")
+    >>> BarFillSpec(color=named).model_dump()["color"]
+    {'names': {'2019': '#E24A33'}, 'rest': '#CCCCCC'}
+    """
+    if isinstance(value, NamedValueSpec):
+        return value.model_dump(mode=info.mode)
+    return handler(value)
+
+
 type Number = Annotated[float, Strict()]
 """A real number. Whole numbers are accepted and stored as floats.
 
@@ -85,13 +141,23 @@ holds, and later changes to the caller's dict do not reach it (§3.5.2). It
 is written out as a plain dict by ``model_dump()``.
 """
 
-type Value[T] = T | tuple[T, ...] | ByName[T]
+type Value[T] = Annotated[
+    T
+    | tuple[T, ...]
+    | ByName[T]
+    | SkipJsonSchema[Annotated[NamedValueSpec[T], PlainValidator(_keep_named)]],
+    WrapSerializer(_dump_value),
+]
 """A value-mapped setting: one value, one per series in order, or by name (§4.8).
 
 A scalar applies to every artist. A tuple is assigned to series in order and
 wraps when shorter; a list passed in is stored as a tuple. A mapping is looked
 up by series name when a legend column is set, and by category name
 otherwise; it is stored read-only.
+
+The fourth form, ``NamedValueSpec``, is a mapping laid over a scalar or a
+tuple. Only an existing instance is accepted, it is left out of the JSON
+Schema, and ``model_dump()`` writes it as a dict.
 """
 
 type Color = str
@@ -164,6 +230,36 @@ type FrameTextVerticalAlignment = Literal["top", "center", "bottom", "center_bas
 """Where label text sits vertically inside its frame."""
 
 
+def is_value_mapped(info: FieldInfo) -> bool:
+    """Say whether a field is one of the 19 value-mapped properties (§4.8).
+
+    A value-mapped field carries ``json_schema_extra={"value_mapped": True}``.
+    Only these fields are layered by name when one layer is laid over
+    another; every other field is replaced whole.
+
+    Parameters
+    ----------
+    info
+        The field's entry in a spec class's ``model_fields``.
+
+    Returns
+    -------
+        True when the field is marked value-mapped.
+
+    Examples
+    --------
+    >>> from opsia.spec import BarCategoryLabelSpec, BarFillSpec
+    >>> is_value_mapped(BarFillSpec.model_fields["color"])
+    True
+    >>> is_value_mapped(BarCategoryLabelSpec.model_fields["custom_values"])
+    False
+    """
+    extra = info.json_schema_extra
+    if extra is None or callable(extra):
+        return False
+    return extra.get("value_mapped") is True
+
+
 class BaseSpec(BaseModel):
     """The base of every Spec: frozen, and closed to unknown keys.
 
@@ -195,6 +291,35 @@ class BaseSpec(BaseModel):
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class NamedValueSpec[T](BaseSpec):
+    """A by-name mapping laid over a scalar or a list (§4.8).
+
+    The resolver looks a series or category name up in ``names`` first and
+    falls back to ``rest``. Built only by ``merge_layers`` and
+    ``replace_at``, when a dict is laid over a scalar or a list; a dict from
+    code or a theme file never becomes one. A dict laid over a dict gives a
+    plain dict, so ``rest`` is never None.
+
+    It is a value, not a node of the spec tree: it is stored in a
+    value-mapped setting such as ``bars.fill.color``.
+
+    Examples
+    --------
+    >>> named = NamedValueSpec(
+    ...     names={"2019": "#E24A33"}, rest=("#4C72B0", "#DD8452")
+    ... )
+    >>> named.names["2019"], named.rest
+    ('#E24A33', ('#4C72B0', '#DD8452'))
+    """
+
+    names: ByName[T] = Field(
+        description="The values given by series or category name.",
+    )
+    rest: T | tuple[T, ...] = Field(
+        description="The value or per-series values for every other name.",
+    )
 
 
 class NumericSpec(BaseSpec):

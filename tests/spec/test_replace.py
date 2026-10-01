@@ -1,11 +1,12 @@
 """replace_at: a new tree with one node changed, the rest shared (§3.5.2)."""
 
+import itertools
 from types import MappingProxyType
 
 import pytest
 from pydantic import ValidationError
 
-from opsia.spec import ChartSpec, replace_at
+from opsia.spec import ChartSpec, NamedValueSpec, merge_layers, replace_at
 
 FILL_SETTINGS = "alpha, color, max_alpha, max_color, min_alpha, min_color"
 
@@ -133,6 +134,56 @@ def test_stored_forms_survive_a_later_change_to_the_same_node() -> None:
     assert isinstance(new.bars.border.color, MappingProxyType)
     assert dict(new.bars.border.color) == {"2019": "#E24A33"}
     assert new.bars.border.width == (1.0, 2.0)
+
+
+# A dict fills in over the stored value (§4.8).
+
+
+def test_replace_at_uses_the_same_rule_as_merge_layers() -> None:
+    """Two .set() calls in a row give what merging the two layers gives.
+
+    Every pair drawn from nothing, a scalar, a list and two dicts is
+    checked, so the six layering rows are all reached through replace_at.
+    """
+    values: list[object] = [
+        None,
+        "#CCCCCC",
+        ["#4C72B0", "#DD8452"],
+        {"2019": "#E24A33"},
+        {"2019": "#55A868", "2020": "#FBC15E"},
+    ]
+    offenders: list[str] = []
+    for first, second in itertools.product(values, repeat=2):
+        stored = replace_at(ChartSpec(), "bars.fill", color=first)
+        by_calls = replace_at(stored, "bars.fill", color=second)
+        by_merge = merge_layers(
+            below=stored, above=replace_at(ChartSpec(), "bars.fill", color=second)
+        )
+        if by_calls.bars.fill.color != by_merge.bars.fill.color:
+            offenders.append(f"{first!r} then {second!r}")
+    assert not offenders, f"replace_at and merge_layers differ for: {offenders}"
+
+
+def test_bad_value_in_a_dict_gives_the_same_error_over_a_stored_value() -> None:
+    """A bad value in a dict is reported as it would be with nothing stored."""
+    bad = {"2019": "half"}
+    with pytest.raises(ValueError, match=r"bars\.fill\.alpha") as alone:
+        replace_at(ChartSpec(), "bars.fill", alpha=bad)
+    stored = replace_at(ChartSpec(), "bars.fill", alpha=[0.5, 1.0])
+    with pytest.raises(ValueError, match=r"bars\.fill\.alpha") as layered:
+        replace_at(stored, "bars.fill", alpha=bad)
+    assert str(layered.value) == str(alone.value)
+
+
+def test_stored_named_value_is_a_setting_not_a_node() -> None:
+    """A NamedValueSpec in a setting is never walked into or rebuilt as a node."""
+    spec = replace_at(ChartSpec(), "bars.fill", color=["#4C72B0", "#DD8452"])
+    spec = replace_at(spec, "bars.fill", color={"2019": "#E24A33"})
+    named = spec.bars.fill.color
+    assert isinstance(named, NamedValueSpec)
+    with pytest.raises(ValueError, match="is a setting, not a node"):
+        replace_at(spec, "bars.fill.color", rest="red")
+    assert replace_at(spec, "bars.fill", alpha=0.5).bars.fill.color is named
 
 
 # Mistakes raise a ValueError that names the full path.

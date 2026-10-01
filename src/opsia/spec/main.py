@@ -14,6 +14,11 @@ returns a new tree (§3.5.2), ``merge_layers`` lays one spec over another
 (§5.4), and ``build_spec_error`` turns a Pydantic validation error into one
 readable ``ValueError`` (§9.6). Recorders and the theme loader call them;
 users do not.
+
+Two more turn a value-mapped setting into one value per artist (§4.8):
+``resolve_per_item`` for bars and line points, ``resolve_per_series`` for
+whole lines and areas. Recorders call them to check dict keys early; the
+renderer calls them to draw.
 """
 
 from pydantic import Field
@@ -60,6 +65,7 @@ from opsia.spec.core._lines import (
 )
 from opsia.spec.core._merge import merge_layers
 from opsia.spec.core._replace import replace_at
+from opsia.spec.core._resolve import resolve_per_item, resolve_per_series
 from opsia.spec.core._types import (
     BaseSpec,
     ByName,
@@ -69,6 +75,7 @@ from opsia.spec.core._types import (
     HorizontalAlignment,
     Integer,
     LineStyle,
+    NamedValueSpec,
     Number,
     NumericSpec,
     Position,
@@ -114,6 +121,7 @@ __all__ = [
     "LineStrokeSpec",
     "LineStyle",
     "LinesSpec",
+    "NamedValueSpec",
     "Number",
     "NumericSpec",
     "Position",
@@ -125,6 +133,8 @@ __all__ = [
     "build_spec_error",
     "merge_layers",
     "replace_at",
+    "resolve_per_item",
+    "resolve_per_series",
 ]
 
 

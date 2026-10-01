@@ -5,6 +5,8 @@ theme file would give, then through ``build_spec_error``, so the tests see
 the same messages a theme load will. The texts asserted in full are the
 wording approved for P2.3a; a change to them is a change to the interface
 (§9.6 rule 6).
+
+The resolver's messages (§4.8, §7.2) are asserted in full at the end.
 """
 
 import importlib
@@ -13,7 +15,15 @@ from typing import TypeAliasType
 import pytest
 from pydantic import ValidationError
 
-from opsia.spec import BarBorderSpec, ChartSpec, build_spec_error, replace_at
+from opsia.spec import (
+    BarBorderSpec,
+    ChartSpec,
+    Value,
+    build_spec_error,
+    replace_at,
+    resolve_per_item,
+    resolve_per_series,
+)
 
 from .walker import leaves
 
@@ -177,10 +187,13 @@ def test_two_paths_give_two_blocks() -> None:
 # One block per path.
 
 
-def test_value_mapped_mistake_gives_one_block_not_three() -> None:
-    """Pydantic reports one error per union form; the message has one block."""
+def test_value_mapped_mistake_gives_one_block_not_four() -> None:
+    """Pydantic reports one error per form of Value; the message has one block.
+
+    The four forms are a scalar, a list, a dict and a NamedValueSpec (§4.8).
+    """
     data = _at("bars.border.style", "dashd")
-    assert _raw_error_count(data) == 3
+    assert _raw_error_count(data) == 4
     message = _message(data)
     assert message.count("Invalid value for") == 1
     assert "problems found" not in message
@@ -258,6 +271,81 @@ def test_alias_wording_names_real_aliases() -> None:
     """The aliases given their own wording exist and are plain text aliases."""
     alias_kinds: dict[str, str] = vars(ERRORS_MODULE)["_ALIAS_KINDS"]
     for name in alias_kinds:
-        alias = getattr(TYPES_MODULE, name, None)
+        alias = getattr(TYPES_MODULE, name)
         assert isinstance(alias, TypeAliasType), f"{name} is not an alias."
         assert alias.__value__ is str, f"{name} is not an alias of str."
+
+
+# The resolver's messages, in full (§4.8, §7.2).
+
+
+def _item_message(value: Value[str], *, series: list[str], legend: bool) -> str:
+    """Resolve per bar on bars.fill.color and return the error message."""
+    with pytest.raises(ValueError) as caught:
+        resolve_per_item(
+            value,
+            path="bars.fill.color",
+            series=series,
+            categories=["Texas", "Ohio"],
+            legend=legend,
+        )
+    return str(caught.value)
+
+
+def _line_message(path: str, value: Value[str]) -> str:
+    """Resolve per line without a legend and return the error message."""
+    with pytest.raises(ValueError) as caught:
+        resolve_per_series(
+            value, path=path, series=["Sales"], categories=["Jan"], legend=False
+        )
+    return str(caught.value)
+
+
+def test_unknown_name_in_a_dict() -> None:
+    """A dict key that names nothing lists the valid names and the closest."""
+    assert _item_message({"Texsa": "red"}, series=["Sales"], legend=False) == (
+        "Unknown name in bars.fill.color: 'Texsa'.\n"
+        "Valid categories: 'Texas', 'Ohio'.\n"
+        "Did you mean 'Texas'?"
+    )
+    assert _item_message(
+        {"Utah": "red", "Iowa": "blue"}, series=["Sales"], legend=False
+    ) == (
+        "Unknown names in bars.fill.color: 'Utah', 'Iowa'.\n"
+        "Valid categories: 'Texas', 'Ohio'."
+    )
+
+
+def test_names_left_without_a_value() -> None:
+    """A plain dict with nothing below it names every series it leaves out."""
+    assert _item_message(
+        {"2019": "red"}, series=["2019", "2020", "2021"], legend=True
+    ) == (
+        "No value for some series in bars.fill.color: '2020', '2021'.\n"
+        "Name them in the dict, or set one value or a list for every series "
+        "in an earlier call or a theme."
+    )
+
+
+def test_dict_on_a_whole_line_without_a_legend() -> None:
+    """A line cannot take a value per category; the message says what to give."""
+    assert _line_message("lines.stroke.color", {"Jan": "red"}) == (
+        "lines.stroke.color: a line has one colour along its whole length, "
+        "so it cannot be set per category.\n"
+        "This chart has no legend, so it has one line.\n"
+        'Give one value, such as "red".'
+    )
+    assert _line_message("lines.area.alpha", {"Jan": "0.5"}) == (
+        "lines.area.alpha: an area has one opacity along its whole length, "
+        "so it cannot be set per category.\n"
+        "This chart has no legend, so it has one line.\n"
+        "Give one value, such as 0.8."
+    )
+
+
+def test_empty_list() -> None:
+    """An empty list gives no series a value."""
+    assert _item_message((), series=["2019"], legend=True) == (
+        "bars.fill.color: the list is empty, so no series gets a value.\n"
+        "Give at least one value."
+    )

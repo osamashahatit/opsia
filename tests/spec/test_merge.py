@@ -2,15 +2,22 @@
 
 Layers are built with ``replace_at``, the way themes and recorders will
 build them, so these tests also show the two helpers working together.
+Value-mapped settings fill in by name instead of being replaced (§4.8).
 """
 
 import inspect
+import itertools
 from functools import reduce
-from types import MappingProxyType
 
 import pytest
 
-from opsia.spec import BarsSpec, ChartSpec, merge_layers, replace_at
+from opsia.spec import BarsSpec, ChartSpec, NamedValueSpec, merge_layers, replace_at
+
+RED = "#E24A33"
+GOLD = "#FBC15E"
+GREEN = "#55A868"
+GREY = "#CCCCCC"
+PALETTE = ("#4C72B0", "#DD8452")
 
 
 def _layer(path: str, **changes: object) -> ChartSpec:
@@ -84,30 +91,89 @@ def test_layers_are_keyword_only() -> None:
     )
 
 
-# Value-mapped settings are taken whole.
+# Value-mapped settings: a dict fills in, a scalar or list replaces (§4.8).
 
 
-def test_dict_above_replaces_dict_below_whole() -> None:
-    """Dicts are not combined key by key: the upper dict replaces the lower one."""
-    below = _layer("bars.fill", color={"2019": "#4C72B0", "2020": "#DD8452"})
-    above = _layer("bars.fill", color={"2021": "#E24A33"})
-    color = merge_layers(below=below, above=above).bars.fill.color
-    assert isinstance(color, MappingProxyType)
-    assert dict(color) == {"2021": "#E24A33"}
+@pytest.mark.parametrize(
+    ("below", "above", "expected"),
+    [
+        pytest.param(GREY, None, GREY, id="nothing above keeps below"),
+        pytest.param({"2019": RED}, GREY, GREY, id="scalar replaces all"),
+        pytest.param({"2019": RED}, list(PALETTE), PALETTE, id="list replaces all"),
+        pytest.param(None, {"2019": RED}, {"2019": RED}, id="dict over nothing"),
+        pytest.param(
+            list(PALETTE),
+            {"2019": RED},
+            NamedValueSpec(names={"2019": RED}, rest=PALETTE),
+            id="dict over list",
+        ),
+        pytest.param(
+            GREY,
+            {"2019": RED},
+            NamedValueSpec(names={"2019": RED}, rest=GREY),
+            id="dict over scalar",
+        ),
+        pytest.param(
+            {"2019": GREEN, "2020": GOLD},
+            {"2019": RED},
+            {"2019": RED, "2020": GOLD},
+            id="dict over dict is one dict",
+        ),
+        pytest.param(
+            NamedValueSpec(names={"2019": GREEN}, rest=PALETTE),
+            {"2019": RED, "2020": GOLD},
+            NamedValueSpec(names={"2019": RED, "2020": GOLD}, rest=PALETTE),
+            id="dict over named fills in names",
+        ),
+        pytest.param(
+            {"2021": GREEN},
+            NamedValueSpec(names={"2019": RED}, rest=GREY),
+            NamedValueSpec(names={"2019": RED}, rest=GREY),
+            id="named above wins whole",
+        ),
+    ],
+)
+def test_value_mapped_layering(below: object, above: object, expected: object) -> None:
+    """Each row of the layering rule, merged on bars.fill.color."""
+    merged = merge_layers(
+        below=_layer("bars.fill", color=below),
+        above=_layer("bars.fill", color=above),
+    )
+    color = merged.bars.fill.color
+    assert color == expected
+    assert isinstance(color, NamedValueSpec) is isinstance(expected, NamedValueSpec)
 
 
-def test_list_above_replaces_list_below_whole() -> None:
-    """A shorter list above replaces a longer list below; nothing is kept."""
-    below = _layer("bars.border", width=[1, 2, 3])
-    above = _layer("bars.border", width=[0.5])
-    assert merge_layers(below=below, above=above).bars.border.width == (0.5,)
+def test_grouping_does_not_matter() -> None:
+    """merge(merge(a, b), c) equals merge(a, merge(b, c)) for every stack.
+
+    Phase 5 merges theme chains, so how they are grouped must not change the
+    result. Every stack of three layers drawn from nothing, a scalar, a list
+    and two dicts is checked.
+    """
+    values: list[object] = [
+        None,
+        GREY,
+        list(PALETTE),
+        {"2019": RED},
+        {"2019": GREEN, "2020": GOLD},
+    ]
+    layers = [_layer("bars.fill", color=value) for value in values]
+    offenders: list[str] = []
+    for (i, a), (j, b), (k, c) in itertools.product(enumerate(layers), repeat=3):
+        left = merge_layers(below=merge_layers(below=a, above=b), above=c)
+        right = merge_layers(below=a, above=merge_layers(below=b, above=c))
+        if left != right:
+            offenders.append(f"{values[i]!r} < {values[j]!r} < {values[k]!r}")
+    assert not offenders, f"Grouping changed the result for: {offenders}"
 
 
-def test_scalar_above_replaces_dict_below() -> None:
-    """A single value above replaces a dict below; the form does not matter."""
-    below = _layer("bars.fill", color={"2019": "#4C72B0"})
-    above = _layer("bars.fill", color="#E24A33")
-    assert merge_layers(below=below, above=above).bars.fill.color == "#E24A33"
+def test_custom_values_is_replaced_whole() -> None:
+    """custom_values is substitution, not value mapping: a dict above replaces."""
+    below = _layer("bars.label.category", custom_values={"Texas": 0.15})
+    above = _layer("bars.label.category", custom_values={"Ohio": 0.2})
+    merged = merge_layers(below=below, above=above)
+    assert merged.bars.label.category.custom_values == {"Ohio": 0.2}
 
 
 # Sharing: what above leaves alone is below's own object.

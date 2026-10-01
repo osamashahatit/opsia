@@ -7,6 +7,7 @@ walk over the tree checks that every number and flag uses them. The wording
 of error messages is tested in ``test_errors.py``.
 """
 
+import json
 from collections.abc import Iterator
 from types import MappingProxyType
 from typing import Annotated, Any, TypeAliasType, get_args, get_origin
@@ -14,7 +15,15 @@ from typing import Annotated, Any, TypeAliasType, get_args, get_origin
 import pytest
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from opsia.spec import BarFillSpec, ChartSpec, Flag, Integer, Number, Value
+from opsia.spec import (
+    BarFillSpec,
+    ChartSpec,
+    Flag,
+    Integer,
+    NamedValueSpec,
+    Number,
+    Value,
+)
 
 from .walker import leaves
 
@@ -170,6 +179,45 @@ def test_mapping_is_read_only(path: str, item: object) -> None:
         stored["Texas"] = item
     source["Texas"] = "changed after validation"
     assert dict(stored) == {"Texas": item}
+
+
+# A NamedValueSpec is accepted only as an existing instance (§4.8).
+
+
+def test_named_value_instance_is_kept_as_it_is() -> None:
+    """An existing NamedValueSpec is stored as the same object, not rebuilt."""
+    named = NamedValueSpec(names={"2019": "#E24A33"}, rest=("#4C72B0", "#DD8452"))
+    assert BarFillSpec(color=named).color is named
+
+
+def test_dict_with_names_and_rest_stays_a_dict() -> None:
+    """A dict with the keys names and rest is a by-name dict, not a NamedValueSpec."""
+    given = {"names": "#E24A33", "rest": "#CCCCCC"}
+    spec = ChartSpec.model_validate(_at("bars.fill.color", given))
+    stored = spec.bars.fill.color
+    assert not isinstance(stored, NamedValueSpec)
+    assert _is_read_only_mapping(stored)
+    assert stored == given
+
+
+@pytest.mark.filterwarnings("error")
+def test_named_value_is_out_of_the_schema_and_dumps_as_a_dict() -> None:
+    """The JSON Schema never offers a NamedValueSpec; a dump writes it as a dict.
+
+    The dump cannot be loaded back: its "names" key reads as a series name
+    holding a dict, not a colour. This is open for §8.4 (saving a chart's
+    look as a theme), which must decide how to write a NamedValueSpec.
+    """
+    assert "NamedValueSpec" not in json.dumps(ChartSpec.model_json_schema())
+    named = NamedValueSpec(names={"2019": "#E24A33"}, rest="#CCCCCC")
+    spec = ChartSpec.model_validate({"bars": {"fill": {"color": named}}})
+    dumped = spec.model_dump()
+    assert dumped["bars"]["fill"]["color"] == {
+        "names": {"2019": "#E24A33"},
+        "rest": "#CCCCCC",
+    }
+    with pytest.raises(ValidationError):
+        ChartSpec.model_validate(dumped)
 
 
 # Numbers and booleans are strict.

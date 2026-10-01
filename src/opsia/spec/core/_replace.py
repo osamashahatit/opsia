@@ -5,11 +5,19 @@ tree instead: it re-validates the changed node with ``model_validate``, then
 rebuilds each node above it on the way back to the root. Every branch off
 that path is passed in as the existing object, so it is shared, not copied.
 
+A dict given for a value-mapped setting fills in over the value already
+stored, by the same rule ``merge_layers`` uses (``layer_value``, §4.8).
+
+Whether a field is a child node or a setting is read from its annotation,
+never from the stored value: a NamedValueSpec stored in a setting is a spec
+object, but not a node.
+
 ``model_copy(update=...)`` and ``model_construct`` are not used: both skip
 validation (§9.3.1 rule 1).
 """
 
 from pydantic import ValidationError
+from pydantic.fields import FieldInfo
 
 from opsia.spec.core._errors import (
     build_node_value_block,
@@ -18,7 +26,8 @@ from opsia.spec.core._errors import (
     build_unknown_key_block,
     build_value_error,
 )
-from opsia.spec.core._types import BaseSpec
+from opsia.spec.core._merge import layer_value
+from opsia.spec.core._types import BaseSpec, is_value_mapped
 
 
 def replace_at[S: BaseSpec](spec: S, path: str, **changes: object) -> S:
@@ -28,6 +37,11 @@ def replace_at[S: BaseSpec](spec: S, path: str, **changes: object) -> S:
     (§5.4): a recorder passes every argument, and a later call must not erase
     what an earlier call set. When every change is None, the same spec object
     is returned. The path and every change name are checked even then.
+
+    A dict given for a value-mapped setting fills in over the value already
+    stored: the names it gives win, and every other name keeps the stored
+    value (§4.8). A scalar or a list replaces the stored value whole, and so
+    does any value for a setting that is not value-mapped.
 
     Only the nodes along ``path`` are rebuilt. Every other branch, and the
     changed node's own child nodes, are the same objects as in ``spec``, and
@@ -67,6 +81,10 @@ def replace_at[S: BaseSpec](spec: S, path: str, **changes: object) -> S:
     True
     >>> replace_at(new, "bars.fill", color=None) is new
     True
+    >>> palette = replace_at(spec, "bars.fill", color=["#4C72B0", "#DD8452"])
+    >>> color = replace_at(palette, "bars.fill", color={"2019": "#E24A33"}).bars.fill.color
+    >>> color.names["2019"], color.rest
+    ('#E24A33', ('#4C72B0', '#DD8452'))
     >>> replace_at(spec, "bars.fill", colour="#E24A33")
     Traceback (most recent call last):
     ...
@@ -82,6 +100,9 @@ def replace_at[S: BaseSpec](spec: S, path: str, **changes: object) -> S:
     if not given:
         return spec
     new: BaseSpec = _rebuild(target, given, prefix=path)
+    layered = _layer_over(target, new, given)
+    if layered:
+        new = _rebuild(new, layered, prefix=path)
     for depth in range(len(names) - 1, 0, -1):
         prefix = ".".join(names[:depth])
         new = _rebuild(chain[depth], {names[depth]: new}, prefix=prefix)
@@ -105,13 +126,14 @@ def _walk(spec: BaseSpec, names: list[str]) -> list[BaseSpec]:
     node_path = ""
     for name in names:
         current = chain[-1]
-        if name not in type(current).model_fields:
+        info = type(current).model_fields.get(name)
+        if info is None:
             block = build_unknown_key_block(
                 type(current), node_path, name, expected="node"
             )
             raise build_value_error([block])
         child: object = getattr(current, name)
-        if not isinstance(child, BaseSpec):
+        if _node_class(info) is None or not isinstance(child, BaseSpec):
             raise build_value_error([build_setting_path_block(node_path, name)])
         chain.append(child)
         node_path = f"{node_path}.{name}" if node_path else name
@@ -125,16 +147,38 @@ def _check_change_names(
     fields = type(target).model_fields
     blocks: list[str] = []
     for name in changes:
-        if name not in fields:
+        info = fields.get(name)
+        if info is None:
             blocks.append(
                 build_unknown_key_block(type(target), path, name, expected="setting")
             )
             continue
-        child: object = getattr(target, name)
-        if isinstance(child, BaseSpec):
-            blocks.append(build_node_value_block(type(child), f"{path}.{name}"))
+        node = _node_class(info)
+        if node is not None:
+            blocks.append(build_node_value_block(node, f"{path}.{name}"))
     if blocks:
         raise build_value_error(blocks)
+
+
+def _layer_over(
+    old: BaseSpec, new: BaseSpec, given: dict[str, object]
+) -> dict[str, object]:
+    """Return the value-mapped changes that must fill in over the old values.
+
+    ``new`` already holds the given values, validated on their own, so a
+    mistake in them was reported exactly as it would be without layering.
+    Only the settings whose layered value differs from that are returned.
+    """
+    fields = type(old).model_fields
+    layered: dict[str, object] = {}
+    for name in given:
+        if not is_value_mapped(fields[name]):
+            continue
+        above: object = getattr(new, name)
+        value = layer_value(above=above, below=getattr(old, name))
+        if value is not above:
+            layered[name] = value
+    return layered
 
 
 def _rebuild[N: BaseSpec](node: N, changes: dict[str, object], *, prefix: str) -> N:
@@ -152,3 +196,11 @@ def _rebuild[N: BaseSpec](node: N, changes: dict[str, object], *, prefix: str) -
         return type(node).model_validate(data)
     except ValidationError as err:
         raise build_spec_error(err, node=type(node), prefix=prefix) from err
+
+
+def _node_class(info: FieldInfo) -> type[BaseSpec] | None:
+    """Return the spec class of a child node field, or None for a setting."""
+    annotation = info.annotation
+    if isinstance(annotation, type) and issubclass(annotation, BaseSpec):
+        return annotation
+    return None

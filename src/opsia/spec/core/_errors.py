@@ -8,7 +8,9 @@ finds the dotted path of each error by walking its ``loc`` against
 
 What a field accepts is read from its type annotation, never from Pydantic's
 message text, so the options a message lists are the ``Literal`` members
-themselves and cannot drift from the spec.
+themselves and cannot drift from the spec. The ``NamedValueSpec`` form of
+``Value`` adds nothing to a message: only Opsia builds one, so it is never
+something to tell the user to give.
 
 ``build_spec_error`` handles a ``ValidationError``. The ``build_*_block``
 functions write the same kinds of block for mistakes found without Pydantic,
@@ -34,7 +36,7 @@ from typing import (
 from pydantic import ValidationError
 from pydantic.fields import FieldInfo
 
-from opsia.spec.core._types import BaseSpec
+from opsia.spec.core._types import BaseSpec, NamedValueSpec, is_value_mapped
 
 _TYPES_MODULE = BaseSpec.__module__
 """The module whose aliases get their own wording in messages."""
@@ -386,7 +388,7 @@ def _leaf_block(first: _Located, info: FieldInfo, items: Sequence[_Located]) -> 
             if isinstance(index, int) and 0 <= index < len(sequence):
                 label = f"{first.path}, item {index + 1} of the list"
                 return _item_block(label, item.value, accepted.item)
-    if _is_value_mapped(info):
+    if is_value_mapped(info):
         return _value_mapped_block(first.path, raw, accepted)
     return _item_block(first.path, raw, accepted)
 
@@ -464,7 +466,8 @@ def _read_accepted(annotation: object, bound: Mapping[object, object]) -> _Accep
     """Read what a type annotation accepts, following aliases and unions.
 
     ``bound`` maps the type parameters of an enclosing generic alias, such as
-    the ``T`` of ``Value[T]``, to the types they stand for.
+    the ``T`` of ``Value[T]``, to the types they stand for. A
+    ``NamedValueSpec`` accepts nothing a user can give, so it adds nothing.
     """
     if isinstance(annotation, TypeVar):
         if annotation not in bound:
@@ -493,6 +496,8 @@ def _read_accepted(annotation: object, bound: Mapping[object, object]) -> _Accep
         return _Accepted(item=_read_accepted(args[0], bound))
     if origin is Mapping:
         return _Accepted(by_name=_read_accepted(args[1], bound))
+    if isinstance(annotation, type) and issubclass(annotation, NamedValueSpec):
+        return _Accepted()
     if isinstance(annotation, type) and annotation in _PLAIN_KINDS:
         return _Accepted(kinds=(_PLAIN_KINDS[annotation],))
     raise TypeError(
@@ -599,14 +604,6 @@ def _child_spec(info: FieldInfo | None) -> type[BaseSpec] | None:
     if isinstance(annotation, type) and issubclass(annotation, BaseSpec):
         return annotation
     return None
-
-
-def _is_value_mapped(info: FieldInfo) -> bool:
-    """Say whether a field is one of the 19 value-mapped properties (§4.8)."""
-    extra = info.json_schema_extra
-    if extra is None or callable(extra):
-        return False
-    return extra.get("value_mapped") is True
 
 
 def _as_mapping(value: object) -> Mapping[object, object] | None:

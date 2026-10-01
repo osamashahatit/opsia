@@ -18,7 +18,9 @@ from types import MappingProxyType
 from typing import TypeAliasType
 
 import pytest
-from pydantic import AfterValidator, Strict, WrapSerializer
+from pydantic import AfterValidator, PlainValidator, Strict, WrapSerializer
+
+from opsia.spec import NamedValueSpec
 
 TYPES_MODULE = importlib.import_module("opsia.spec.core._types")
 
@@ -136,13 +138,31 @@ def test_by_name_is_a_read_only_mapping() -> None:
     assert len(metadata) == 2, f"ByName carries extra metadata: {metadata!r}."
 
 
-def test_value_is_scalar_tuple_or_by_name() -> None:
-    """Value[T] unwraps to T, tuple[T, ...] and ByName[T] (§4.8)."""
+def test_value_is_four_forms_under_one_serializer() -> None:
+    """Value[T] is T, tuple[T, ...], ByName[T] and NamedValueSpec[T] (§4.8).
+
+    The four forms sit under one serializer, which writes a NamedValueSpec
+    as a dict. The fourth form is checked by ``_keep_named`` alone, so only
+    an existing instance is accepted.
+    """
     alias = _alias("Value")
     (param,) = alias.__type_params__
-    scalar, per_series, by_name = typing.get_args(alias.__value__)
+    value = alias.__value__
+    assert typing.get_origin(value) is typing.Annotated
+    union, *metadata = typing.get_args(value)
+    assert len(metadata) == 1, f"Value carries {metadata!r}."
+    assert isinstance(metadata[0], WrapSerializer)
+
+    scalar, per_series, by_name, named = typing.get_args(union)
     assert scalar is param
     assert typing.get_origin(per_series) is tuple
     assert typing.get_args(per_series) == (param, ...)
     assert typing.get_origin(by_name) is _alias("ByName")
     assert typing.get_args(by_name) == (param,)
+
+    assert typing.get_origin(named) is typing.Annotated
+    named_type, *named_metadata = typing.get_args(named)
+    assert issubclass(named_type, NamedValueSpec)
+    validators = [item for item in named_metadata if isinstance(item, PlainValidator)]
+    keep_named = vars(TYPES_MODULE)["_keep_named"]
+    assert [validator.func for validator in validators] == [keep_named]
